@@ -1,0 +1,28 @@
+name: nlp_fs
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  # defaults
+  - python>=3.11
+  - nbformat>=4.2.0
+  - pip
+  - pre-commit
+  - pytest>=6  # Adds --import-mode option
+  - pytest-cov
+  - setuptools-scm
+  - ipykernel
+  # data
+  - pandas
+  - numpy
+  - pyarrow
+  - conda-forge::python-docx
+  # interactive
+  - ipykernel
+  # plots
+  - matplotlib
+  - seaborn
+  # ml
+  - pytorch::pytorch
+  - transformers
+  - spacy
