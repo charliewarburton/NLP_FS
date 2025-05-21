@@ -1,5 +1,6 @@
 library(vars)
 library(tidyverse)
+library(lubridate)
 
 setwd("C:\\Users\\charl\\OneDrive\\Uni\\Masters\\Dissertation\\NLP_FS")
 
@@ -31,7 +32,8 @@ release_dates <- c(
 release_dates <- as.Date(release_dates, format = "%Y-%m-%d") %>% 
   rev()
   
-
+source("processing_BIS.R")
+BIS_df <- BIS_data(release_dates)
 
 # Grpah showing pos/neg over time
 df_full <- df %>% 
@@ -243,6 +245,78 @@ colnames(data) <- cols
 
 data$Date <- as.Date(data$Date, format = "%Y-%m-%d")
 
+CDS <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "CDS")
+colnames(CDS) <- c("Date", "CDS")
+
+price_book <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "PB")
+colnames(price_book) <- c("Date", "Price.Book.Ratio")
+
+calculate_monthly_avg <- function(df, date_col, value_col, date_format = "%Y-%m-%d"){
+  df_processed <- df # Work on a copy of the dataframe
+  
+  # Standardize the date column to 'TempDate' and ensure it's Date type.
+  # This involves creating/updating a 'TempDate' column from the specified 'date_col'.
+  # If 'date_col' is not already a Date object, it will be converted.
+  if (inherits(df_processed[[date_col]], "Date")) {
+    # If the source column is already Date type, directly assign it to TempDate
+    df_processed$TempDate <- df_processed[[date_col]]
+  } else {
+    # If the source column is not Date type (e.g., character, factor), attempt conversion
+    message(paste0("Column '", date_col, "' is not of Date type. Attempting conversion using format: '", date_format, "'."))
+    
+    # Explicitly convert to character first, in case it's a factor or other non-character type
+    date_values_to_convert <- as.character(df_processed[[date_col]])
+    
+    df_processed$TempDate <- tryCatch({
+      as.Date(date_values_to_convert, format = date_format)
+    }, error = function(e) {
+      stop(paste0("Date conversion failed for column '", date_col, "'. ",
+                  "Please ensure the data matches the format '", date_format, "' or is already a Date object. Original error: ", e$message), call. = FALSE)
+    })
+  }
+  
+  # Check if conversion resulted in NAs, which indicates a format mismatch or bad data
+  if (any(is.na(df_processed$TempDate))) {
+    warning(paste0("Some values in '", date_col, "' could not be converted to dates (resulted in NAs after attempt). ",
+                   "These rows will be excluded from the analysis. Please check date format and values."))
+    df_processed <- df_processed[!is.na(df_processed$TempDate), ] # Remove rows where TempDate is NA
+    if(nrow(df_processed) == 0) {
+      stop("All date conversions resulted in NA or all rows with valid dates were filtered out. Please check your date column and format.", call. = FALSE)
+    }
+  }
+  
+  
+  # --- Calculation ---
+  monthly_avg_df <- df_processed %>%
+    # Create a year-month column for grouping
+    mutate(YearMonth = floor_date(TempDate, "month")) %>%
+    # Group by this new YearMonth column
+    group_by(YearMonth) %>%
+    # Calculate the average of the specified value column and get the last day of the month
+    summarise(
+      MonthlyAverage = mean(.data[[value_col]], na.rm = TRUE), # Use .data[[value_col]] for dynamic column name
+      .groups = 'drop' # Drop grouping structure after summarising
+    ) %>%
+    # Set the date to the last day of the month
+    mutate(MonthEnd = ceiling_date(YearMonth, "month") - days(1)) %>%
+    # Select and rename columns for the final output
+    select(MonthEnd, MonthlyAverage)
+  colnames(monthly_avg_df) <- c("Date", value_col) # Rename the columns to match the original
+  return(monthly_avg_df)
+}
+  
+price_book <- calculate_monthly_avg(price_book, "Date", "Price.Book.Ratio")
+CDS <- calculate_monthly_avg(CDS, "Date", "CDS")
+
+# Join to other data
+data <- data %>%
+  left_join(price_book, by = "Date") %>%
+  left_join(CDS, by = "Date")
+
+# Join BIS data
+data <- data %>%
+  left_join(BIS_df, by = "Date")
+
 join_data <- function(sentiment_df, data){
   
   # Function to join sentiment data with financial cycle data
@@ -295,6 +369,7 @@ print(lag_selection$criteria) # Show AIC, BIC, and HQC criteria
 
 
 # These results are quite promising, VAR(1) wasn't significant but this is
+ts_filtered_full_diff <- ts_filtered_full_diff[, -c(2, 8)] # Drop Total credit and household DSR (Because VIFs)
 var_model_filtered_full <- VAR(ts_filtered_full_diff, p = 2, type = "const") # VAR(2) with constant term
 summary(var_model_filtered_full)
 
@@ -305,8 +380,8 @@ summary(var_model_filtered_full)
 # Sig neg coefficient for 2nd lag on External Debt to GDP
   # But this equation low R squared and doesn't pass F test
 
-# Drop Total credit to GDP
-ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, -2] # Drop first column (Total credit to GDP)
+# TODO: Unsure about whether I need to drop the columns here (need to in linear regression but unsure about VAR)
+ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, -c(2,8)] # Drop Total credit and household DSR (Because VIFs)
 var_model_filtered_87_60 <- VAR(ts_filtered_87_60_diff, p = 2, type = "const") # VAR(2) with constant term
 summary(var_model_filtered_87_60)
 
@@ -315,7 +390,17 @@ summary(var_model_filtered_87_60)
 ##### Linear Regression #####
 # ---------------------------
 
-# With total credit to GDP the VIF scores were too high
-lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP, data = df_filtered_87_60_joined)
+# With total credit to GDP and household_dsr the VIF scores were too high
+lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP+
+         house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
 summary(lm)
 car::vif(lm)
+
+
+lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP+
+                house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined) 
+summary(lm_full)
+car::vif(lm_full)
+
+
+
