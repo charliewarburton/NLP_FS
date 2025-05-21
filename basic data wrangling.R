@@ -57,6 +57,10 @@ point_graph <- function(df, title = "Sentiment over time"){
   return(graph)
 }
 
+standardise <- function(x){
+  return((x - mean(x))/sd(x))
+}
+
 df_87 <- df %>% 
   filter(Sentiment.Score >= 0.87) %>% 
   group_by(Report) %>%
@@ -135,7 +139,7 @@ compare_with_correa <- function(df, title = "Comparison of Sentiment Index"){
   
   # Standardise
   comparison_df <- comparison_df %>%
-    mutate_at(vars(correa_index, Sentiment.Index ), standardise)
+    mutate_at(vars(correa_index, Sentiment.Index ), standardise) # standardise
   
   out <- ggplot(comparison_df, aes(x = Report)) +
     geom_line(aes(y = correa_index, color = "Correa")) +
@@ -288,11 +292,6 @@ ts_filtered_87_60_diff <- standardise_timeseries_diff(df_filtered_87_60_joined)
 lag_selection <- VARselect(ts_87_60_diff, lag.max = 6, type = "const") # Test up to 6 lags
 print(lag_selection$criteria) # Show AIC, BIC, and HQC criteria
 
-var_model <- VAR(ts_87_60_diff, p = 1, type = "const") # VAR(1) with constant term
-summary(var_model)
-
-var_model_87 <- VAR(ts_87_diff, p = 1, type = "const") # VAR(1) with constant term
-summary(var_model_87)
 
 
 # These results are quite promising, VAR(1) wasn't significant but this is
@@ -306,8 +305,17 @@ summary(var_model_filtered_full)
 # Sig neg coefficient for 2nd lag on External Debt to GDP
   # But this equation low R squared and doesn't pass F test
 
+# Drop Total credit to GDP
+ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, -2] # Drop first column (Total credit to GDP)
 var_model_filtered_87_60 <- VAR(ts_filtered_87_60_diff, p = 2, type = "const") # VAR(2) with constant term
 summary(var_model_filtered_87_60)
 
 
+# ---------------------------
+##### Linear Regression #####
+# ---------------------------
 
+# With total credit to GDP the VIF scores were too high
+lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP, data = df_filtered_87_60_joined)
+summary(lm)
+car::vif(lm)
