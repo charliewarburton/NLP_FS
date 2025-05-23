@@ -3,7 +3,7 @@ library(tidyverse)
 library(lubridate)
 
 BIS_data <- function(release_dates){
-  urls = c("https://stats.bis.org/api/v2/data/dataflow/BIS/WS_DPP/1.0/Q.GB.0.1.2.1.0.0?format=csv", # House prices
+  urls = c("https://stats.bis.org/api/v2/data/dataflow/BIS/WS_DPP/1.0/Q.GB.0.1.2.1.0.0?format=csv", # Real YoY House prices
            "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_DSR/1.0/Q.GB.P?format=csv", # PNFC DSR
            "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_DSR/1.0/Q.GB.H?format=csv") # Household DSR
   

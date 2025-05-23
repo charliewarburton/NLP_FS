@@ -317,6 +317,34 @@ data <- data %>%
 data <- data %>%
   left_join(BIS_df, by = "Date")
 
+# Real GDP from FRED
+real_GDP <- read.csv("real_GDP.csv")
+colnames(real_GDP) <- c("Date", "Real.GDP")
+real_GDP$Date <- as.Date(real_GDP$Date, format = "%Y-%m-%d")
+real_GDP$QoQ <- (real_GDP$Real.GDP - lag(real_GDP$Real.GDP, 1))/lag(real_GDP$Real.GDP, 1) # QoQ growth
+real_GDP$QoQ <- real_GDP$QoQ * 100
+real_GDP <- real_GDP %>%
+  select(Date, QoQ) %>% 
+  na.omit()
+# Move dates back 1 day as FRED data is start of next month whereas others are end of month
+real_GDP$Date <- real_GDP$Date - days(1)
+colnames(real_GDP) <- c("Date", "Real.GDP.QoQ")
+data <- data %>%
+  left_join(real_GDP, by = "Date")
+
+# SRISK data from VLAB
+# Folowing Correa, take SRISK and divide by nominal GDP (Data from FRED)
+SRISK <- read.csv("srisk.csv")
+colnames(SRISK) <- c("Date", "SRISK.Raw", "UKNGDP")
+SRISK <- SRISK %>% 
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y")) %>%
+  mutate(SRISK = SRISK.Raw/UKNGDP) %>% 
+  select(Date, SRISK) %>% 
+  na.omit()
+
+data <- data %>%
+  left_join(SRISK, by = "Date")
+
 join_data <- function(sentiment_df, data){
   
   # Function to join sentiment data with financial cycle data
@@ -385,22 +413,54 @@ ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, -c(2,8)] # Drop Total credit 
 var_model_filtered_87_60 <- VAR(ts_filtered_87_60_diff, p = 2, type = "const") # VAR(2) with constant term
 summary(var_model_filtered_87_60)
 
+# How impulse response might be done I'm not sure
+# oir <- irf(var_model_filtered_full, impulse = "house_price_yoy", response = "Sentiment.Index",
+#            n.ahead = 4, ortho = TRUE, runs = 1000, seed = 12345)
+# plot(oir)
 
 # ---------------------------
 ##### Linear Regression #####
 # ---------------------------
 
 # With total credit to GDP and household_dsr the VIF scores were too high
-lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP+
+# Results might be better without PNF credit growth and GDP too
+lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + SRISK +
          house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
 summary(lm)
 car::vif(lm)
 
 
-lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + External.Debt.To.GDP+
+lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth+ SRISK+
                 house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined) 
 summary(lm_full)
 car::vif(lm_full)
 
 
+# Lagged regression - giving same results as contemperous which is good
+df_filtered_87_60_joined_lag <- df_filtered_87_60_joined %>%
+  mutate(Sentiment.Index = lag(Sentiment.Index, 2),
+         Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
+         PNF.Credit.Growth = lag(PNF.Credit.Growth, 2),
+         SRISK = lag(SRISK, 2),
+         house_price_yoy = lag(house_price_yoy, 2),
+         pnfc_dsr = lag(pnfc_dsr, 2),
+         Price.Book.Ratio = lag(Price.Book.Ratio, 2),
+         CDS = lag(CDS, 2)) %>%
+  na.omit()
+lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK
+           house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined_lag)
+summary(lm_87_lag)
 
+df_filtered_full_joined_lag <- df_filtered_full_joined %>%
+  mutate(Sentiment.Index = lag(Sentiment.Index, 2),
+         Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
+         PNF.Credit.Growth = lag(PNF.Credit.Growth, 2),
+         SRISK = lag(SRISK, 2),
+         house_price_yoy = lag(house_price_yoy, 2),
+         pnfc_dsr = lag(pnfc_dsr, 2),
+         Price.Book.Ratio = lag(Price.Book.Ratio, 2),
+         CDS = lag(CDS, 2)) %>%
+  na.omit()
+lm_full_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +
+                     house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined_lag)
+summary(lm_full_lag)
