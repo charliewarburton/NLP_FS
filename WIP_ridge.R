@@ -18,7 +18,7 @@ df_standardized[cols_to_scale] <- lapply(df_standardized[cols_to_scale], functio
 # 3. Define the model formula
 # This is the formula from your original lm() call
 model_formula <- Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + household_dsr +
-  house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS
+  house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS + SRISK
 
 # 4. Bootstrap loop for Ridge Regression
 num_bootstraps <- 1000

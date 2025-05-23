@@ -447,10 +447,11 @@ df_filtered_87_60_joined_lag <- df_filtered_87_60_joined %>%
          Price.Book.Ratio = lag(Price.Book.Ratio, 2),
          CDS = lag(CDS, 2)) %>%
   na.omit()
-lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK
+lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK +
            house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined_lag)
 summary(lm_87_lag)
 
+# SRISK makes this worse right now
 df_filtered_full_joined_lag <- df_filtered_full_joined %>%
   mutate(Sentiment.Index = lag(Sentiment.Index, 2),
          Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
