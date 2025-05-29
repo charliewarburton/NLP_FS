@@ -234,7 +234,7 @@ ggplot(df_sentiment_indexs, aes(x = Report, y = Sentiment.Index, color = Thresho
 
 
 
-# ----------------------------------- #
+# ----------------------------------- ##
 ##### Get financial cycle data #####
 # ----------------------------------- #
 setwd("C:\\Users\\charl\\OneDrive\\Uni\\Masters\\Dissertation\\NLP_FS\\Data\\")
@@ -333,17 +333,37 @@ data <- data %>%
   left_join(real_GDP, by = "Date")
 
 # SRISK data from VLAB
-# Folowing Correa, take SRISK and divide by nominal GDP (Data from FRED)
+usdgbp <- read.csv("EXUSUK.csv")
+usdgbp$observation_date <- as.Date(usdgbp$observation_date, format = "%Y-%m-%d")
+colnames(usdgbp) <- c("Date", "USD.GBP")
+usdgbp$Date <- usdgbp$Date- days(1) # FRED first of month whereas other data end of month
+
+# Folowing Correa, take SRISK and divide by nominal GDP (Data from FRED).
+# SRISK is in $ so converting UK GDP to $
 SRISK <- read.csv("srisk.csv")
 colnames(SRISK) <- c("Date", "SRISK.Raw", "UKNGDP")
-SRISK <- SRISK %>% 
+SRISK <- SRISK %>%
   mutate(Date = as.Date(Date, format = "%d/%m/%Y")) %>%
-  mutate(SRISK = SRISK.Raw/UKNGDP) %>% 
+  left_join(usdgbp, by = "Date") %>%  
+  mutate(USD.GDP = UKNGDP * USD.GBP) %>% # Convert to USD
+  mutate(SRISK = SRISK.Raw/USD.GDP) %>% 
   select(Date, SRISK) %>% 
   na.omit()
 
+
+
 data <- data %>%
   left_join(SRISK, by = "Date")
+
+# Add VIX (daily series from FRED)
+vix <- read.csv("VIXCLS.csv") %>% 
+  na.omit()
+vix$observation_date <- as.Date(vix$observation_date, format = "%d/%m/%Y")
+vix <- calculate_monthly_avg(vix, "observation_date", "VIXCLS")
+colnames(vix) <- c("Date", "VIX")
+# Join VIX
+data <- data %>%
+  left_join(vix, by = "Date") 
 
 join_data <- function(sentiment_df, data){
   
@@ -389,15 +409,27 @@ ts_87_diff <- standardise_timeseries_diff(df_87_joined)
 ts_filtered_full_diff <- standardise_timeseries_diff(df_filtered_full_joined)
 ts_filtered_87_60_diff <- standardise_timeseries_diff(df_filtered_87_60_joined)
 
-# VAR lag selection 
-# Not working right now
-lag_selection <- VARselect(ts_87_60_diff, lag.max = 6, type = "const") # Test up to 6 lags
-print(lag_selection$criteria) # Show AIC, BIC, and HQC criteria
 
-
+# Variables to use in VAR
+variables_to_use <- c("Sentiment.Index", "Credit.To.GDP.Gap",
+                      "PNF.Credit.Growth", "pnfc_dsr" ,"Price.Book.Ratio", "VIX")
+# Decent results with
+# variables_to_use <- c("Sentiment.Index", "Credit.To.GDP.Gap",
+# "PNF.Credit.Growth", "pnfc_dsr" ,"Price.Book.Ratio", "VIX")
+# Get locations of these in the data frame
+var_indices <- match(variables_to_use, colnames(ts_filtered_full_diff))
 
 # These results are quite promising, VAR(1) wasn't significant but this is
-ts_filtered_full_diff <- ts_filtered_full_diff[, -c(2, 8)] # Drop Total credit and household DSR (Because VIFs)
+# Drop: Total Credit (VIF)
+# External Debt (Irrelevant)
+# Household DSR (VIF)
+# GDP (Irrelevant)
+
+ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, var_indices] # Drop Total credit and household DSR (Because VIFs)
+var_model_filtered_87_60 <- VAR(ts_filtered_87_60_diff, p = 2, type = "const") # VAR(2) with constant term
+summary(var_model_filtered_87_60)
+
+ts_filtered_full_diff <- ts_filtered_full_diff[,var_indices] # Drop Total credit a household DSR and GDP (Because VIFs)
 var_model_filtered_full <- VAR(ts_filtered_full_diff, p = 2, type = "const") # VAR(2) with constant term
 summary(var_model_filtered_full)
 
@@ -409,9 +441,7 @@ summary(var_model_filtered_full)
   # But this equation low R squared and doesn't pass F test
 
 # TODO: Unsure about whether I need to drop the columns here (need to in linear regression but unsure about VAR)
-ts_filtered_87_60_diff <- ts_filtered_87_60_diff[, -c(2,8)] # Drop Total credit and household DSR (Because VIFs)
-var_model_filtered_87_60 <- VAR(ts_filtered_87_60_diff, p = 2, type = "const") # VAR(2) with constant term
-summary(var_model_filtered_87_60)
+
 
 # How impulse response might be done I'm not sure
 # oir <- irf(var_model_filtered_full, impulse = "house_price_yoy", response = "Sentiment.Index",
@@ -430,10 +460,15 @@ summary(lm)
 car::vif(lm)
 
 
-lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth+ SRISK+
+lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth+ SRISK+ VIX+
                 house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined) 
 summary(lm_full)
 car::vif(lm_full)
+
+lm_vix <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + CDS+
+                  pnfc_dsr + SRISK + VIX, data = df_filtered_87_60_joined)
+summary(lm_vix)
+car::vif(lm_vix)
 
 
 # Lagged regression - giving same results as contemperous which is good
@@ -442,12 +477,13 @@ df_filtered_87_60_joined_lag <- df_filtered_87_60_joined %>%
          Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
          PNF.Credit.Growth = lag(PNF.Credit.Growth, 2),
          SRISK = lag(SRISK, 2),
+         VIX = lag(VIX, 2),
          house_price_yoy = lag(house_price_yoy, 2),
          pnfc_dsr = lag(pnfc_dsr, 2),
          Price.Book.Ratio = lag(Price.Book.Ratio, 2),
          CDS = lag(CDS, 2)) %>%
   na.omit()
-lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK +
+lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK +VIX+
            house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined_lag)
 summary(lm_87_lag)
 
