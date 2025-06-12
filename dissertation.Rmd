@@ -1,0 +1,415 @@
+---
+title: "Dissertation"
+author: "3385E"
+date: "2025-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r, echo =TRUE}
+# Setting up data
+setwd("C:\\Users\\charl\\OneDrive\\Uni\\Masters\\Dissertation\\NLP_FS")
+library(vars)
+library(caret)
+library(tidyverse)
+library(lubridate)
+library(here)
+library(stargazer) # latex code for the regression tables
+
+release_dates <- c(
+  "2024-11-01", "2024-06-01",
+  "2023-12-01", "2023-07-01",
+  "2022-12-01", "2022-07-01",
+  "2021-12-01", "2021-07-01",
+  "2020-12-01", "2020-08-01",
+  "2019-12-01", "2019-07-01",
+  "2018-11-01", "2018-06-01",
+  "2017-11-01", "2017-06-01",
+  "2016-11-01", "2016-07-01",
+  "2015-12-01", "2015-07-01",
+  "2014-12-01", "2014-06-01",
+  "2013-11-01", "2013-06-01",
+  "2012-11-01", "2012-06-01",
+  "2011-12-01", "2011-06-01",
+  "2010-12-01", "2010-06-01",
+  "2009-12-01", "2009-06-01",
+  "2008-10-01", "2008-05-01",
+  "2007-10-01", "2007-04-01",
+  "2006-07-01"
+)
+# order in reverse
+release_dates <- as.Date(release_dates, format = "%Y-%m-%d") %>% 
+  rev()
+
+here::here()
+
+source(here::here("processing_BIS.R"))
+BIS_df <- BIS_data(release_dates)
+
+
+df <- read.csv(here::here("full_results.csv"))
+
+# Filter for words in Correa's dictionary in text chunk
+correa_dict <- readxl::read_xlsx(here::here("Data","correa_dictionary.xlsx"), sheet = "1 FS Dictionary")
+# Add british spellings
+british_spellings = c(
+  'destabilising',
+  'favourable',
+  'favourably',
+  'jeopardise',
+  'lacklustre',
+  'stabilise',
+  'stabilised',
+  'stabilising',
+  'unfavourable'
+)
+correa_words <- c(correa_dict$Word, british_spellings)
+
+# filter text chunks for words in dictionary
+pattern <- paste0("\\b(", paste(correa_words, collapse="|"), ")\\b")
+
+df_filtered <- df %>%
+  filter(str_detect(Text.Chunk, regex(pattern, ignore_case = TRUE)))
+
+# Like the correa paper, using total of all chunks
+df_totals <- df %>% 
+  group_by(Report) %>%
+  summarise(total = n())
+
+df_filtered_87_60 <- df_filtered %>% 
+  filter(Sentiment.Label == "negative" & Sentiment.Score >= 0.87 | 
+           Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>% 
+  group_by(Report) %>%
+  summarise(neg = sum(Sentiment.Label == "negative"),
+            pos = sum(Sentiment.Label == "positive"))
+            #total = n()) %>% 
+df_filtered_87_60$total <- df_totals$total
+df_filtered_87_60 <- df_filtered_87_60 %>%
+  mutate(Sentiment.Index = (neg - pos)/total)
+df_filtered_87_60$Report <- as.Date(release_dates, format = "%Y-%m-%d")
+
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r, echo=FALSE}
+sentiment_graph <- function(df, title = "Sentiment Index over time"){
+  # Calculate median
+  median <- median(df$Sentiment.Index, na.rm = TRUE)
+  graph <- ggplot(df, aes(x = Report, y = Sentiment.Index)) +
+    geom_line() +
+    geom_hline(yintercept = median, linetype = "dashed", color = "grey") +
+    labs(title = title,
+         x = "Date",
+         y = "Sentiment Index (increasing is poorer sentiment)") +
+    theme_minimal()
+  
+  return(graph)
+}
+sentiment_graph(df_filtered_87_60, "FSR Sentiment Index")
+```
+```{r, echo=FALSE}
+# Language Models vs Dictionary methods
+
+# NB: Below code is saved to show how the sample method was done 
+
+set.seed(123)
+# 
+# df_sample <- df %>%
+#   filter(Sentiment.Label == "negative" & Sentiment.Score >= 0.87 |
+#            Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>% 
+#   filter(str_detect(Text.Chunk, regex(pattern, ignore_case = TRUE)))
+# ran_ints <- sample(1:nrow(df_sample), 50)
+# df_sample <- df_sample[ran_ints, ]
+# 
+# write.csv(df_sample, "sub_sample_label.csv", row.names = FALSE)
+
+df_sample <- read.csv(here::here("Data", "sub_sample_label.csv"))
+
+correa_pos <- correa_dict %>% 
+  filter(Positive == 1) %>% 
+  select(Word)
+
+correa_neg <- correa_dict %>%
+  filter(Negative == 1) %>% 
+  select(Word)
+
+pos_pattern <- paste0("\\b(", paste(correa_pos$Word, collapse="|"), ")\\b")
+neg_pattern <- paste0("\\b(", paste(correa_neg$Word, collapse="|"), ")\\b")
+
+df_sample <- df_sample %>%
+  mutate(
+    # 1. Create a column 'Correa_Pos' with the count of positive pattern matches
+    Correa_Pos = str_count(Text.Chunk, regex(pos_pattern, ignore_case = TRUE)),
+    
+    # 2. Create a column 'Correa_Neg' with the count of negative pattern matches
+    Correa_Neg = str_count(Text.Chunk, regex(neg_pattern, ignore_case = TRUE)),
+    
+    # 3. Create 'Correa.Label' based on the comparison of the two new count columns
+    Correa.Label = case_when(
+      Correa_Pos > Correa_Neg ~ "positive",
+      # This 'TRUE' acts as an "else" condition. It will be triggered if
+      # Correa_Pos is NOT greater than Correa_Neg, which covers both
+      # cases where Correa_Neg is higher or they are equal (a draw).
+      TRUE ~ "negative"
+    )
+  )
+
+df_sample_robust <- df_sample %>% 
+  filter(Correa.Label == "positive") %>% 
+  mutate(
+    Correa.Label = case_when(
+      str_detect(Text.Chunk, regex(neg_pattern, ignore_case = T)) ~ "Double Classification",
+      TRUE ~ Correa.Label))
+
+# ------------------------
+# Confusion matrix
+# ------------------------
+all_levels <- c("positive", "negative", "none")
+
+# Ensure both columns are factors with the same levels
+df_sample$Correa.Label <- factor(df_sample$Correa.Label, levels = all_levels)
+df_sample$Human.Label <- factor(df_sample$Human.Label, levels = all_levels)
+
+# Generate the confusion matrix
+cm_correa <- confusionMatrix(data = df_sample$Correa.Label,
+                             reference = df_sample$Human.Label)
+
+# Print the Correa results
+print("--- Evaluation: Correa.Label vs Human.Label ---")
+print(cm_correa)
+
+# CBRoBERTa Confusion Matrix
+df_sample$Sentiment.Label <- factor(df_sample$Sentiment.Label, levels = all_levels)
+cm_cbr <- confusionMatrix(data = df_sample$Sentiment.Label,
+                           reference = df_sample$Human.Label)
+# Print the CBRoBERTa results
+print("--- Evaluation: Sentiment.Label vs Human.Label ---")
+print(cm_cbr)
+```
+```{r, echo=FALSE}
+
+# Join all the macrofinancial data to the sentiment index
+
+setwd(here("Data")) # Sets to data folder
+data <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "Sheet1")
+
+cols <- c("Date", "Total.Credit.To.GDP", "Credit.To.GDP.Gap", "PNF.Credit.Growth", "External.Debt.To.GDP")
+colnames(data) <- cols
+
+data$Date <- as.Date(data$Date, format = "%Y-%m-%d")
+
+CDS <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "CDS")
+colnames(CDS) <- c("Date", "CDS")
+
+price_book <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "PB")
+colnames(price_book) <- c("Date", "Price.Book.Ratio")
+
+calculate_monthly_avg <- function(df, date_col, value_col, date_format = "%Y-%m-%d"){
+  df_processed <- df # Work on a copy of the dataframe
+  
+  # Standardise the date column to 'TempDate' and ensure it's Date type.
+  # If 'date_col' is not already a Date object, it will be converted.
+  if (inherits(df_processed[[date_col]], "Date")) {
+    # If the source column is already Date type, directly assign it to TempDate
+    df_processed$TempDate <- df_processed[[date_col]]
+  } else {
+    # If the source column is not Date type (e.g., character, factor), attempt conversion
+    message(paste0("Column '", date_col, "' is not of Date type. Attempting conversion using format: '", date_format, "'."))
+    
+    # Explicitly convert to character first, in case it's a factor or other non-character type
+    date_values_to_convert <- as.character(df_processed[[date_col]])
+    
+    df_processed$TempDate <- tryCatch({
+      as.Date(date_values_to_convert, format = date_format)
+    }, error = function(e) {
+      stop(paste0("Date conversion failed for column '", date_col, "'. ",
+                  "Please ensure the data matches the format '", date_format, "' or is already a Date object. Original error: ", e$message), call. = FALSE)
+    })
+  }
+  
+  # Check if conversion resulted in NAs, which indicates a format mismatch or bad data
+  if (any(is.na(df_processed$TempDate))) {
+    warning(paste0("Some values in '", date_col, "' could not be converted to dates (resulted in NAs after attempt). ",
+                   "These rows will be excluded from the analysis. Please check date format and values."))
+    df_processed <- df_processed[!is.na(df_processed$TempDate), ] # Remove rows where TempDate is NA
+    if(nrow(df_processed) == 0) {
+      stop("All date conversions resulted in NA or all rows with valid dates were filtered out. Please check your date column and format.", call. = FALSE)
+    }
+  }
+  
+  
+  # --- Calculation ---
+  monthly_avg_df <- df_processed %>%
+    # Create a year-month column for grouping
+    mutate(YearMonth = floor_date(TempDate, "month")) %>%
+    # Group by this new YearMonth column
+    group_by(YearMonth) %>%
+    # Calculate the average of the specified value column and get the last day of the month
+    summarise(
+      MonthlyAverage = mean(.data[[value_col]], na.rm = TRUE), # Use .data[[value_col]] for dynamic column name
+      .groups = 'drop' # Drop grouping structure after summarising
+    ) %>%
+    # Set the date to the last day of the month
+    mutate(MonthEnd = ceiling_date(YearMonth, "month") - days(1)) %>%
+    # Select and rename columns for the final output
+    select(MonthEnd, MonthlyAverage)
+  colnames(monthly_avg_df) <- c("Date", value_col) # Rename the columns to match the original
+  return(monthly_avg_df)
+}
+  
+price_book <- calculate_monthly_avg(price_book, "Date", "Price.Book.Ratio")
+CDS <- calculate_monthly_avg(CDS, "Date", "CDS")
+
+# Join to other data
+data <- data %>%
+  left_join(price_book, by = "Date") %>%
+  left_join(CDS, by = "Date")
+
+# Corp bond spreads
+corp_bond_spreads <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "CorpBonds") %>% 
+  na.omit() %>%  # Clears rows with GBHY 
+  select(Date, `GBP investment-grade`, `GBP high-yield`)
+colnames(corp_bond_spreads) <- c("Date", "GBP.Investment.Grade", "GBP.High.Yield")
+# Convert Date to Date type
+corp_bond_spreads$Date <- as.Date(corp_bond_spreads$Date, format = "%Y-%m-%d")
+corp_bond_spreads_IG <- calculate_monthly_avg(corp_bond_spreads, "Date", "GBP.Investment.Grade")
+corp_bond_spreads_HY <- calculate_monthly_avg(corp_bond_spreads, "Date", "GBP.High.Yield")
+corp_bond_spreads <- corp_bond_spreads_IG %>%
+  left_join(corp_bond_spreads_HY, by = "Date")
+# Join corp bond spreads
+data <- data %>%
+  left_join(corp_bond_spreads, by = "Date")
+# Join BIS data
+data <- data %>%
+  left_join(BIS_df, by = "Date")
+
+
+# SRISK data from VLAB
+usdgbp <- read.csv("EXUSUK.csv")
+usdgbp$observation_date <- as.Date(usdgbp$observation_date, format = "%Y-%m-%d")
+colnames(usdgbp) <- c("Date", "USD.GBP")
+usdgbp$Date <- usdgbp$Date- days(1) # FRED first of month whereas other data end of month
+
+# Folowing Correa, take SRISK and divide by nominal GDP (Data from FRED).
+# SRISK is in $ so converting UK GDP to $
+SRISK <- read.csv("srisk.csv")
+colnames(SRISK) <- c("Date", "SRISK.Raw", "UKNGDP")
+SRISK <- SRISK %>%
+  mutate(Date = as.Date(Date, format = "%d/%m/%Y")) %>%
+  left_join(usdgbp, by = "Date") %>%  
+  mutate(USD.GDP = UKNGDP * USD.GBP) %>% # Convert to USD
+  mutate(SRISK = SRISK.Raw/USD.GDP) %>% 
+  select(Date, SRISK) %>% 
+  na.omit()
+
+
+
+data <- data %>%
+  left_join(SRISK, by = "Date")
+
+# Add VIX (daily series from FRED)
+vix <- read.csv("VIXCLS.csv") %>% 
+  na.omit()
+vix$observation_date <- as.Date(vix$observation_date, format = "%d/%m/%Y")
+vix <- calculate_monthly_avg(vix, "observation_date", "VIXCLS")
+colnames(vix) <- c("Date", "VIX")
+# Join VIX
+data <- data %>%
+  left_join(vix, by = "Date") 
+
+# Downloaded FTSE data and processed into vol in processing_ftse.R
+ftse_vol <- read.csv("FTSE100_Volatility.csv")
+ftse_vol$Date <- as.Date(ftse_vol$Date, format = "%Y-%m-%d")
+# Join FTSE volatility
+data <- data %>% 
+  left_join(ftse_vol, by = "Date")
+
+join_data <- function(sentiment_df, data){
+  
+  # Function to join sentiment data with financial cycle data
+  
+  joined_df <- sentiment_df %>%
+    left_join(data %>% 
+                rename(Financial_Date = Date), # Rename to prevent conflicts
+              by = join_by(closest(Report >= Financial_Date)) )# Ensuring past data is used
+    
+  joined_df <- joined_df %>%
+    dplyr::select(-c(pos, neg, total, Financial_Date)) # Removing unneeded columns
+  
+  return(joined_df)
+}
+
+# Join the sentiment index with the financial cycle data
+df_filtered_87_60_joined <- join_data(df_filtered_87_60, data)
+
+standardise <- function(x){
+  # If not numeric, return as is
+  if (!is.numeric(x)) {
+    return(x)
+  }
+  return((x - mean(x))/sd(x))
+}
+
+# Standardise into Z scores
+df_filtered_87_60_joined <- df_filtered_87_60_joined %>%
+  mutate_at(vars(-Report), standardise)
+
+
+```
+
+
+### Linear Models
+```{r, echo=FALSE}
+
+# Contemperous 
+
+lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap  + SRISK + VIX  +
+           pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+rounded_coefficients <- round(lm$coefficients, digits = 3)
+lm$coefficients <- rounded_coefficients
+summary(lm)
+car::vif(lm)
+
+
+# Lagged
+
+
+df_filtered_87_60_joined_lag <- df_filtered_87_60_joined %>%
+  mutate(Sentiment.Index_lag = lag(Sentiment.Index, 2),
+         VIX_lag = lag(VIX, 2),
+         Credit.To.GDP.Gap_lag = lag(Credit.To.GDP.Gap, 2),
+         PNF.Credit.Growth_lag = lag(PNF.Credit.Growth, 2),
+         SRISK_lag = lag(SRISK, 2),
+         house_price_yoy_lag = lag(house_price_yoy, 2),
+         pnfc_dsr_lag = lag(pnfc_dsr, 2),
+         Price.Book.Ratio_lag = lag(Price.Book.Ratio, 2),
+         CDS_lag = lag(CDS, 2)) %>%
+  na.omit() %>% 
+  mutate_at(vars(-Report), standardise) # Standardise again
+
+lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap_lag +SRISK_lag +VIX_lag 
+                + Price.Book.Ratio_lag + pnfc_dsr_lag + 
+                  CDS_lag, data = df_filtered_87_60_joined_lag)
+lm_87_lag$coefficients <- round(lm_87_lag$coefficients, digits = 3)
+summary(lm_87_lag)
+car::vif(lm_87_lag)
+
+# stargazer latex code
+stargazer(lm, lm_87_lag, type="latex", title = "Linear Model Results",
+          dep.var.labels = "Sentiment Index",
+          covariate.labels = c("Credit to GDP Gap", "SRISK", "VIX", "PNFC Debt Service Ratio", "Price to Book Ratio", "CDS"), align = TRUE)
+
+```

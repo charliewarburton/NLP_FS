@@ -1,5 +1,8 @@
 library(glmnet)
-df_standardized <- df_filtered_full_joined
+df_standardized <- df_filtered_87_60_joined
+# df_standardized <- gemini_joined
+colnames(df_standardized)[2] <- "Sentiment.Index"
+
 
 # Identify numeric columns to scale (all except 'Report')
 cols_to_scale <- setdiff(names(df_standardized), "Report")
@@ -12,13 +15,13 @@ df_standardized[cols_to_scale] <- lapply(df_standardized[cols_to_scale], functio
 # Check standardized data (means should be ~0, sd ~1 for scaled columns)
 #
 #print(head(df_standardized))
-#print(sapply(df_standardized[cols_to_scale], mean))
+print(sapply(df_standardized[cols_to_scale], mean))
 # print(sapply(df_standardized[cols_to_scale], sd))
 
 # 3. Define the model formula
 # This is the formula from your original lm() call
-model_formula <- Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + household_dsr +
-  house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS + SRISK
+model_formula <- Sentiment.Index ~ Credit.To.GDP.Gap + household_dsr + Total.Credit.To.GDP+ 
+  house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS + SRISK+ VIX+ PNF.Credit.Growth
 
 # 4. Bootstrap loop for Ridge Regression
 num_bootstraps <- 1000
@@ -100,10 +103,12 @@ violin_plot <- ggplot(coeffs_long, aes(x = Coefficient, y = Value, fill = Coeffi
   theme_minimal(base_size = 12) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         legend.position = "none") + # Hide legend if fills are just for aesthetics
-  stat_summary(fun = median, geom = "point", shape = 18, size = 3, color = "black")
+  stat_summary(fun = median, geom = "point", shape = 18, size = 3, color = "black")+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") # Add horizontal line at 0
 violin_plot
 
 
+# May be worth using 95% and 5%
 summary_coeffs <- apply(bootstrap_coeffs_df, 2, function(x) {
   c(Mean = mean(x, na.rm = TRUE),
     SD = sd(x, na.rm = TRUE),

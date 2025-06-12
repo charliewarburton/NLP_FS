@@ -2,6 +2,15 @@ library(vars)
 library(tidyverse)
 library(lubridate)
 
+# standardise data helper function
+standardise <- function(x){
+  # If not numeric, return as is
+  if (!is.numeric(x)) {
+    return(x)
+  }
+  return((x - mean(x))/sd(x))
+}
+
 setwd("C:\\Users\\charl\\OneDrive\\Uni\\Masters\\Dissertation\\NLP_FS")
 
 df <- read.csv("full_results.csv")
@@ -73,7 +82,7 @@ point_graph(df_87, "Sentiment over time (Sentiment Score >= 0.87)")
 
 df_87_60 <- df %>% 
   filter(Sentiment.Label == "negative" & Sentiment.Score >= 0.87 | 
-           Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>%
+           Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>% 
   group_by(Report) %>%
   summarise(neg = sum(Sentiment.Label == "negative"),
             pos = sum(Sentiment.Label == "positive"))
@@ -162,9 +171,22 @@ plot
 
 # Filter for words in Correa's dictionary in text chunk
 correa_dict <- readxl::read_xlsx("correa_dictionary.xlsx", sheet = "1 FS Dictionary")
+# Add british spellings
+british_spellings = c(
+  'destabilising',
+  'favourable',
+  'favourably',
+  'jeopardise',
+  'lacklustre',
+  'stabilise',
+  'stabilised',
+  'stabilising',
+  'unfavourable'
+)
+correa_words <- c(correa_dict$Word, british_spellings)
 
 # filter text chunks for words in dictionary
-pattern <- paste0("\\b(", paste(correa_dict$Word, collapse="|"), ")\\b")
+pattern <- paste0("\\b(", paste(correa_words, collapse="|"), ")\\b")
 
 df_filtered <- df %>%
   filter(str_detect(Text.Chunk, regex(pattern, ignore_case = TRUE)))
@@ -187,7 +209,7 @@ df_filtered_full$Report <- as.Date(release_dates, format = "%Y-%m-%d")
 
 df_filtered_87_60 <- df_filtered %>% 
   filter(Sentiment.Label == "negative" & Sentiment.Score >= 0.87 | 
-           Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>%
+           Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>% 
   group_by(Report) %>%
   summarise(neg = sum(Sentiment.Label == "negative"),
             pos = sum(Sentiment.Label == "positive"))
@@ -231,6 +253,38 @@ ggplot(df_sentiment_indexs, aes(x = Report, y = Sentiment.Index, color = Thresho
 # ----------------------------------- #
 ##### Get Sub Indexes #####
 # ----------------------------------- #
+
+
+create_sub_index <- function(df_filtered, df_unfiltered , agent_label){
+  # Function to create sub index for a given agent label
+  # Need an unfiltered df to get total counts to follow Correa
+  totals_sub <- df_unfiltered %>% 
+    filter(Agent.Label == agent_label) %>%
+    group_by(Report) %>%
+    summarise(total = n())
+  
+  sub_df <- df_filtered %>% 
+    filter(Agent.Label == agent_label) %>%
+    filter(Sentiment.Label == "negative" & Sentiment.Score >= 0.87 | 
+             Sentiment.Label == "positive" & Sentiment.Score >= 0.60) %>%
+    group_by(Report) %>%
+    summarise(neg = sum(Sentiment.Label == "negative"),
+              pos = sum(Sentiment.Label == "positive"))
+  
+  sub_df$total <- totals_sub$total
+  sub_df <- sub_df %>%
+    mutate(Sentiment.Index = (neg - pos)/total)
+  sub_df$Report <- as.Date(release_dates, format = "%Y-%m-%d")
+  
+  return(sub_df)
+} 
+
+financial_sub <- create_sub_index(df_filtered, df, "Financial Sector")
+household_sub <- create_sub_index(df_filtered, df, "Households")
+
+
+
+
 
 
 
@@ -313,6 +367,20 @@ data <- data %>%
   left_join(price_book, by = "Date") %>%
   left_join(CDS, by = "Date")
 
+# Corp bond spreads
+corp_bond_spreads <- readxl::read_xlsx("cleaned_data.xlsx", sheet = "CorpBonds") %>% 
+  na.omit() %>%  # Clears rows with GBHY 
+  select(Date, `GBP investment-grade`, `GBP high-yield`)
+colnames(corp_bond_spreads) <- c("Date", "GBP.Investment.Grade", "GBP.High.Yield")
+# Convert Date to Date type
+corp_bond_spreads$Date <- as.Date(corp_bond_spreads$Date, format = "%Y-%m-%d")
+corp_bond_spreads_IG <- calculate_monthly_avg(corp_bond_spreads, "Date", "GBP.Investment.Grade")
+corp_bond_spreads_HY <- calculate_monthly_avg(corp_bond_spreads, "Date", "GBP.High.Yield")
+corp_bond_spreads <- corp_bond_spreads_IG %>%
+  left_join(corp_bond_spreads_HY, by = "Date")
+# Join corp bond spreads
+data <- data %>%
+  left_join(corp_bond_spreads, by = "Date")
 # Join BIS data
 data <- data %>%
   left_join(BIS_df, by = "Date")
@@ -365,6 +433,13 @@ colnames(vix) <- c("Date", "VIX")
 data <- data %>%
   left_join(vix, by = "Date") 
 
+# Downloaded FTSE data and processed into vol in processing_ftse.R
+ftse_vol <- read.csv("FTSE100_Volatility.csv")
+ftse_vol$Date <- as.Date(ftse_vol$Date, format = "%Y-%m-%d")
+# Join FTSE volatility
+data <- data %>% 
+  left_join(ftse_vol, by = "Date")
+
 join_data <- function(sentiment_df, data){
   
   # Function to join sentiment data with financial cycle data
@@ -412,7 +487,7 @@ ts_filtered_87_60_diff <- standardise_timeseries_diff(df_filtered_87_60_joined)
 
 # Variables to use in VAR
 variables_to_use <- c("Sentiment.Index", "Credit.To.GDP.Gap",
-                      "PNF.Credit.Growth", "pnfc_dsr" ,"Price.Book.Ratio", "VIX")
+                      "pnfc_dsr" ,"Price.Book.Ratio", "VIX", "PNF.Credit.Growth")
 # Decent results with
 # variables_to_use <- c("Sentiment.Index", "Credit.To.GDP.Gap",
 # "PNF.Credit.Growth", "pnfc_dsr" ,"Price.Book.Ratio", "VIX")
@@ -452,52 +527,150 @@ summary(var_model_filtered_full)
 ##### Linear Regression #####
 # ---------------------------
 
+
+
+df_filtered_87_60_joined <- df_filtered_87_60_joined %>%
+  mutate_at(vars(-Report), standardise)
+
 # With total credit to GDP and household_dsr the VIF scores were too high
 # Results might be better without PNF credit growth and GDP too
-lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + SRISK +
-         house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+# Stock Volatility basically a worse VIX
+lm <- lm(Sentiment.Index ~ Credit.To.GDP.Gap  + SRISK + VIX  +
+           pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+rounded_coefficients <- round(lm$coefficients, digits = 3)
+lm$coefficients <- rounded_coefficients
 summary(lm)
 car::vif(lm)
-
 
 lm_full <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth+ SRISK+ VIX+
                 house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined) 
 summary(lm_full)
 car::vif(lm_full)
 
-lm_vix <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + CDS+
+lm_var <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth + CDS+
                   pnfc_dsr + SRISK + VIX, data = df_filtered_87_60_joined)
-summary(lm_vix)
-car::vif(lm_vix)
+rounded_coefficients <- round(lm_var$coefficients, digits = 3)
+lm_var$coefficients <- rounded_coefficients
+summary(lm_var)
+car::vif(lm_var)
 
 
 # Lagged regression - giving same results as contemperous which is good
+# Should be restandardised though
 df_filtered_87_60_joined_lag <- df_filtered_87_60_joined %>%
-  mutate(Sentiment.Index = lag(Sentiment.Index, 2),
-         Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
-         PNF.Credit.Growth = lag(PNF.Credit.Growth, 2),
-         SRISK = lag(SRISK, 2),
-         VIX = lag(VIX, 2),
-         house_price_yoy = lag(house_price_yoy, 2),
-         pnfc_dsr = lag(pnfc_dsr, 2),
-         Price.Book.Ratio = lag(Price.Book.Ratio, 2),
-         CDS = lag(CDS, 2)) %>%
-  na.omit()
-lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +SRISK +VIX+
-           house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined_lag)
+  mutate(Sentiment.Index_lag = lag(Sentiment.Index, 2),
+         VIX_lag = lag(VIX, 2),
+         Credit.To.GDP.Gap_lag = lag(Credit.To.GDP.Gap, 2),
+         PNF.Credit.Growth_lag = lag(PNF.Credit.Growth, 2),
+         SRISK_lag = lag(SRISK, 2),
+         house_price_yoy_lag = lag(house_price_yoy, 2),
+         pnfc_dsr_lag = lag(pnfc_dsr, 2),
+         Price.Book.Ratio_lag = lag(Price.Book.Ratio, 2),
+         CDS_lag = lag(CDS, 2)) %>%
+  na.omit() %>% 
+  mutate_at(vars(-Report), standardise) # Standardise again
+
+lm_87_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap_lag  +SRISK_lag +VIX_lag +
+            pnfc_dsr_lag + CDS_lag, data = df_filtered_87_60_joined_lag)
+lm_87_lag$coefficients <- round(lm_87_lag$coefficients, digits = 3)
 summary(lm_87_lag)
 
 # SRISK makes this worse right now
 df_filtered_full_joined_lag <- df_filtered_full_joined %>%
-  mutate(Sentiment.Index = lag(Sentiment.Index, 2),
-         Credit.To.GDP.Gap = lag(Credit.To.GDP.Gap, 2),
-         PNF.Credit.Growth = lag(PNF.Credit.Growth, 2),
-         SRISK = lag(SRISK, 2),
-         house_price_yoy = lag(house_price_yoy, 2),
-         pnfc_dsr = lag(pnfc_dsr, 2),
-         Price.Book.Ratio = lag(Price.Book.Ratio, 2),
-         CDS = lag(CDS, 2)) %>%
+  mutate(Credit.To.GDP.Gap_lag = lag(Credit.To.GDP.Gap, 2),
+         PNF.Credit.Growth_lag = lag(PNF.Credit.Growth, 2),
+         SRISK_lag = lag(SRISK, 2),
+         house_price_yoy_lag = lag(house_price_yoy, 2),
+         pnfc_dsr_lag = lag(pnfc_dsr, 2),
+         Price.Book.Ratio_lag = lag(Price.Book.Ratio, 2),
+         CDS_lag = lag(CDS, 2)) %>%
   na.omit()
 lm_full_lag <- lm(Sentiment.Index ~ Credit.To.GDP.Gap + PNF.Credit.Growth +
                      house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS, data = df_filtered_full_joined_lag)
 summary(lm_full_lag)
+
+
+# -------------------
+# Sub index analysis
+# -------------------
+
+financials_joined <- join_data(financial_sub, data)
+colnames(financials_joined)[2] <- "Financial.Sentiment.Index"
+household_joined <- join_data(household_sub, data)
+colnames(household_joined)[2] <- "Household.Sentiment.Index"
+# Standardise sub indexes
+financials_joined <- financials_joined %>%
+  mutate_at(vars(-Report), standardise)
+household_joined <- household_joined %>%
+  mutate_at(vars(-Report), standardise)
+
+
+lm_financials <- lm(Financial.Sentiment.Index ~ Credit.To.GDP.Gap + SRISK + VIX+
+                        pnfc_dsr + CDS, data = financials_joined) #Price book marginal
+lm_financials$coefficients <- round(lm_financials$coefficients, digits = 3)
+summary(lm_financials)
+car::vif(lm_financials)
+
+
+lm_household <- lm(Household.Sentiment.Index ~ Credit.To.GDP.Gap +household_dsr + house_price_yoy
+                   ,data = household_joined)
+lm_household$coefficients <- round(lm_household$coefficients, digits = 3)
+summary(lm_household)
+car::vif(lm_household)
+
+
+#---------------------------
+# Sentiment as an explanatory variable
+#---------------------------
+# Restandardise the lag dfs
+df_filtered_87_60_joined_lag <- df_filtered_87_60_joined_lag %>%
+  mutate_at(vars(-Report), standardise) %>% 
+  mutate(Sentiment.Index = ifelse(Sentiment.Index > 2, 2, Sentiment.Index))
+
+
+
+lm_dsr <- lm(pnfc_dsr ~ Sentiment.Index + Credit.To.GDP.Gap + PNF.Credit.Growth + lag(Sentiment.Index,1) +
+           VIX + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+lm_dsr$coefficients <- round(lm_dsr$coefficients, digits = 3)
+summary(lm_dsr)
+
+lm_dsr_lag <- lm(pnfc_dsr ~ Sentiment.Index_lag + Credit.To.GDP.Gap_lag + PNF.Credit.Growth_lag +
+           SRISK_lag + VIX_lag + Price.Book.Ratio_lag + CDS_lag, data = df_filtered_87_60_joined_lag)
+lm_dsr_lag$coefficients <- round(lm_dsr_lag$coefficients, digits = 3)
+summary(lm_dsr_lag)
+car::vif(lm_dsr_lag)
+
+
+lm_credit_gap <- lm(Credit.To.GDP.Gap ~ Sentiment.Index + PNF.Credit.Growth + lag(Sentiment.Index,1) +
+                        SRISK + VIX + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+lm_credit_gap$coefficients <- round(lm_credit_gap$coefficients, digits = 3)
+summary(lm_credit_gap)
+
+lm_credit_gap_lag <- lm(Credit.To.GDP.Gap ~ Sentiment.Index_lag + PNF.Credit.Growth_lag + lag(Sentiment.Index,1) +
+                        SRISK_lag + VIX_lag + Price.Book.Ratio_lag + CDS_lag, data = df_filtered_87_60_joined_lag)
+lm_credit_gap_lag$coefficients <- round(lm_credit_gap_lag$coefficients, digits = 3)
+summary(lm_credit_gap_lag)
+
+lm_credit_growth <- lm(PNF.Credit.Growth ~ Sentiment.Index + Credit.To.GDP.Gap + lag(Sentiment.Index,1) +
+                        SRISK + VIX + Price.Book.Ratio + CDS, data = df_filtered_87_60_joined)
+lm_credit_growth$coefficients <- round(lm_credit_growth$coefficients, digits = 3)
+summary(lm_credit_growth)
+
+lm_HY <- lm(GBP.Investment.Grade ~ lag(Sentiment.Index,1) +
+              lag(Credit.To.GDP.Gap,1)  +
+              lag(CDS,1), data = df_filtered_87_60_joined)
+lm_HY$coefficients <- round(lm_HY$coefficients, digits = 3)
+summary(lm_HY)
+car::vif(lm_HY)
+
+
+
+# Plot IG spread vs sentiment
+ggplot(df_filtered_87_60_joined, aes(x = Report)) +
+  geom_line(aes(y = GBP.High.Yield, color = "Investment Grade Spread")) +
+  geom_line(aes(y = Sentiment.Index, color = "Sentiment Index")) +
+  labs(title = "Investment Grade Spread vs Sentiment Index",
+       x = "Report",
+       y = "Spread / Sentiment Index") +
+  theme_minimal() +
+  scale_color_manual(values = c("Investment Grade Spread" = "blue", "Sentiment Index" = "red"))
