@@ -19,7 +19,6 @@ print(sapply(df_standardized[cols_to_scale], mean))
 # print(sapply(df_standardized[cols_to_scale], sd))
 
 # 3. Define the model formula
-# This is the formula from your original lm() call
 model_formula <- Sentiment.Index ~ Credit.To.GDP.Gap + household_dsr + Total.Credit.To.GDP+ 
   house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS + SRISK+ VIX+ PNF.Credit.Growth
 

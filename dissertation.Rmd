@@ -413,3 +413,57 @@ stargazer(lm, lm_87_lag, type="latex", title = "Linear Model Results",
           covariate.labels = c("Credit to GDP Gap", "SRISK", "VIX", "PNFC Debt Service Ratio", "Price to Book Ratio", "CDS"), align = TRUE)
 
 ```
+```{r, echo=FALSE}
+
+source(here::here("results_ridge.R"))
+
+model_formula <- Sentiment.Index ~ Credit.To.GDP.Gap + household_dsr + Total.Credit.To.GDP+ 
+  house_price_yoy + pnfc_dsr + Price.Book.Ratio + CDS + SRISK+ VIX
+
+ridge_results <- run_bootstrap_ridge(df_filtered_87_60_joined, model_formula, n_bootstraps = 2000, shaded = T, sig_level = 5)
+
+ridge_results$violin_plot
+
+ridge_results_lag <- run_bootstrap_ridge(df_filtered_87_60_joined_lag, model_formula, n_bootstraps = 2000, shaded = T, title = "Distribution of Ridge Coefficients (Lagged)", sig_level = 5)
+
+lagged_violin <- ridge_results_lag$violin_plot
+new_labels <- c(
+  "(Intercept)" = "Intercept",
+  "Credit.To.GDP.Gap" = "Credit/GDP Gap",
+  "household_dsr" = "Household DSR",
+  "Total.Credit.To.GDP" = "Total Credit/GDP",
+  "house_price_yoy" = "Property Price (YoY)",
+  "pnfc_dsr" = "PNFC DSR",
+  "Price.Book.Ratio" = "Price-to-Book",
+  "CDS" = "CDS Spreads",
+  "SRISK" = "SRISK",
+  "VIX" = "VIX Index"
+)
+lagged_violin <- lagged_violin +
+                 scale_x_discrete(labels = new_labels)
+# Show plot with nice labels
+lagged_violin
+
+# Save the violin plot as PDF with high DPI
+ggsave("ridge_violin_plot_lagged.pdf", plot = lagged_violin, width = 10, height = 6, dpi = 300)
+
+
+ridge_results_lag$summary_table
+```
+
+```{r, echo=FALSE}
+
+# Plotting sentiment index and PNFC_DSR 
+# Didn't show this in the dissertation, but useful for understanding the data
+
+ggplot(df_filtered_87_60_joined, aes(x = Report)) +
+  geom_line(aes(y = Sentiment.Index, color = "Sentiment Index")) +
+  geom_line(aes(y = pnfc_dsr, color = "PNFC Debt Service Ratio")) +
+  labs(title = "Sentiment Index and PNFC Debt Service Ratio Over Time",
+       x = "Date",
+       y = "Value") +
+  scale_color_manual(values = c("Sentiment Index" = "blue", "PNFC Debt Service Ratio" = "red")) +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+```
