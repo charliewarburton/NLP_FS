@@ -24,6 +24,8 @@ library(tidyverse)
 library(lubridate)
 library(here)
 library(stargazer) # latex code for the regression tables
+library(glmnet) # For ridge regression
+library(party) # For random forests
 
 release_dates <- c(
   "2024-11-01", "2024-06-01",
@@ -413,6 +415,8 @@ stargazer(lm, lm_87_lag, type="latex", title = "Linear Model Results",
           covariate.labels = c("Credit to GDP Gap", "SRISK", "VIX", "PNFC Debt Service Ratio", "Price to Book Ratio", "CDS"), align = TRUE)
 
 ```
+
+## Ridge Model
 ```{r, echo=FALSE}
 
 source(here::here("results_ridge.R"))
@@ -450,6 +454,198 @@ ggsave("ridge_violin_plot_lagged.pdf", plot = lagged_violin, width = 10, height 
 
 ridge_results_lag$summary_table
 ```
+
+
+## Random Forest Prediction Model
+```{r, echo=FALSE}
+# Add new column for IG Spread Turning Points
+find_turning_points <- function(df, col_name) {
+  # Check if the specified column exists in the dataframe
+  if(!col_name %in% names(df)){
+    stop(paste("Column '", col_name, "' not found in the dataframe.", sep = ""))
+  }
+  
+  # Create the name for the new turning point column
+  tp_col_name <- paste0(col_name, ".TP")
+  
+  df <- df %>%
+    mutate(
+      # A peak occurs if the value is greater than its neighbors, and the
+      # subsequent downward trend persists for at least one more step.
+      # Condition: x[i-1] < x[i] > x[i+1] AND x[i+1] > x[i+2]
+      is_peak = lag(.data[[col_name]]) < .data[[col_name]] &
+        lead(.data[[col_name]]) < .data[[col_name]] &
+        lead(.data[[col_name]], 1) > lead(.data[[col_name]], 2),
+      
+      # A trough occurs if the value is less than its neighbors, and the
+      # subsequent upward trend persists for at least one more step.
+      # Condition: x[i-1] > x[i] < x[i+1] AND x[i+1] < x[i+2]
+      is_trough = lag(.data[[col_name]]) > .data[[col_name]] &
+        lead(.data[[col_name]]) > .data[[col_name]] &
+        lead(.data[[col_name]], 1) < lead(.data[[col_name]], 2),
+      
+      # Combine conditions. Use !! and := for dynamic column naming.
+      # Convert the resulting boolean (TRUE/FALSE) to an integer (1/0).
+      # Replace NAs (at the start/end of the series) with 0.
+      !!tp_col_name := as.integer(is_peak | is_trough),
+      !!tp_col_name := tidyr::replace_na(!!sym(tp_col_name), 0)
+    ) %>%
+    # Remove the intermediate helper columns
+    select(-is_peak, -is_trough)
+  
+  # Make new col type factor
+  df[[tp_col_name]] <- as.factor(df[[tp_col_name]])
+  
+  return(df)
+}
+
+df_filtered_87_60_joined <- find_turning_points(df_filtered_87_60_joined, "GBP.Investment.Grade")
+
+# Show more TPs than the TPs in Credit to GDP Gap
+df_filtered_87_60_joined <- find_turning_points(df_filtered_87_60_joined, "Credit.To.GDP.Gap")
+
+# Compare TPs
+print("--- Turning Points in GBP Investment Grade (Row) and Credit to GDP Gap (Col) ---")
+table(df_filtered_87_60_joined$GBP.Investment.Grade.TP, df_filtered_87_60_joined$Credit.To.GDP.Gap.TP)
+
+# Random Forest Model
+
+source(here::here("results_RF.R"))
+
+# Large model - poor performance and lots of noise
+explanatory_vars <- c("Sentiment.Index", "VIX", "Credit.To.GDP.Gap", 
+                      "SRISK", "house_price_yoy", 
+                      "pnfc_dsr", "Price.Book.Ratio", "CDS",
+                      "household_dsr", "Total.Credit.To.GDP" )
+rf_results_large <- rf_importance_TP(df_filtered_87_60_joined,
+                               independent = "GBP.Investment.Grade.TP",
+                               explanatory = explanatory_vars,
+                               repeats = 1000,
+                               trees = 380,
+                               lag = 2)
+# Absolute lowest importance was -0.0140
+# Lowest average importance was -0.00396
+
+# Removing negative variables
+explanatory_vars <- c("Sentiment.Index", "house_price_yoy", "SRISK", 
+                      "pnfc_dsr", "CDS")
+rf_results_med <- rf_importance_TP(df_filtered_87_60_joined,
+                               independent = "GBP.Investment.Grade.TP",
+                               explanatory = explanatory_vars,
+                               repeats = 1000,
+                               trees = 380,
+                               lag = 2)
+rf_results_med$importance # non negative importance for CDS and pnfc_dsr
+rf_results_med$performance # Recall: 0.25025	Precision: 0.1726482	F1: 0.2036837	
+
+# Below variables identified via backward selection
+explanatory_vars <- c("Sentiment.Index", "house_price_yoy", "SRISK")
+
+
+rf_results_2lag <- rf_importance_TP(df_filtered_87_60_joined,
+                               independent = "GBP.Investment.Grade.TP",
+                               explanatory = explanatory_vars,
+                               repeats = 1000,
+                               trees = 380,
+                               lag = 2)
+rf_results_2lag$importance # Non-negative importance for all variables
+
+# Min importance of sentiment is 0.02 which is greater in magnitude than 0.0140
+# Under Brookes and Bholat this is significant
+rf_results_2lag$min_performance
+
+
+```
+
+```{r, echo=FALSE}
+# Variable Importance Plot
+all_vars <- c("Sentiment.Index", "VIX", "Credit.To.GDP.Gap", 
+                      "SRISK", "house_price_yoy", 
+                      "pnfc_dsr", "Price.Book.Ratio", "CDS",
+                      "household_dsr", "Total.Credit.To.GDP" )
+
+variable_importance_scores <- c(4.78, 0, 0, 
+                                1.06, 2.02,
+                                0.0498, 0, 0.2,
+                                0, 0)
+
+var_imp_df <- data.frame(
+  Variable = all_vars,
+  Importance = variable_importance_scores
+)
+
+min_val <- abs(min(rf_results_large$importance$avg_importance)*100)
+
+# Create a plot
+
+pretty_labels <- c(
+  "Sentiment.Index"     = "Sentiment Index",
+  "house_price_yoy"     = "Property Price\n(YoY)", # <-- THE FIX: Add a newline
+  "SRISK"               = "SRISK",
+  "CDS"                 = "CDS Spreads",
+  "pnfc_dsr"            = "PNFC DSR",
+  "VIX"                 = "VIX Index",
+  "Total.Credit.To.GDP" = "Total Credit/GDP",
+  "Price.Book.Ratio"    = "Price-to-Book",
+  "household_dsr"       = "Household DSR",
+  "Credit.To.GDP.Gap"   = "Credit To GDP Gap"
+)
+
+# Create a new dataframe with a column for color grouping and apply the pretty labels
+plot_df <- var_imp_df %>%
+  mutate(
+    # Create a new column to define the color for each point
+    color_group = case_when(
+      Variable == "Sentiment.Index" ~ "Sentiment",
+      Importance >= min_val         ~ "Important",
+      TRUE                          ~ "Not Important"
+    ),
+    # Map the original variable names to the new pretty labels
+    Variable_Plot = recode(Variable, !!!pretty_labels),
+    # Reorder the new plot variable factor by 'Importance' so the plot is sorted
+    Variable_Plot = fct_reorder(Variable_Plot, Importance)
+  )
+
+# --- 4. Create the Plot (MODIFIED SECTION) ---
+# Use the new 'Variable_Plot' column for the y-axis
+ggplot(plot_df, aes(x = Importance, y = Variable_Plot)) +
+  
+  # Add the black vertical line at the minimum importance threshold
+  geom_vline(xintercept = min_val, color = "black", size = 0.8, linetype="dashed") +
+  
+  # Add the points, with color determined by our grouping variable
+  geom_point(aes(color = color_group), size = 3.5) +
+  
+  # Manually define the colors for each group
+  scale_color_manual(
+    values = c(
+      "Sentiment" = "#0072B2",
+      "Important" = "black",
+      "Not Important" = "grey60"
+    ),
+    guide = "none" # Hide the color legend
+  ) +
+  
+  # Set the axis labels
+  labs(
+    x = "Mean Decrease in Accuracy (%)",
+    y = NULL
+  ) +
+  
+  # Apply a clean theme and adjust for multi-line text
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.y = element_line(color = "grey92", linetype = "solid"),
+    panel.grid.minor.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    # Adjust line height of y-axis text to make wrapped labels look neat
+    axis.text.y = element_text(lineheight = 0.8) 
+  )
+
+# Save the plot as a PDF with high DPI
+ggsave("rf_variable_importance.pdf", width = 8, height = 6, dpi = 300)
+```
+
 
 ```{r, echo=FALSE}
 

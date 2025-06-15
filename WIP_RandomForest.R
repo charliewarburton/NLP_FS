@@ -242,8 +242,8 @@ rf_importance_TP <- function(df, independent, explanatory, lag,
     }
   }
   
-  # --- Aggregate and Finalize Results ---
-  # Summarize importance scores
+  # --- Aggregate and Finalise Results ---
+  # Summarise importance scores
   final_importance <- importance_results %>%
     group_by(var) %>%
     summarise(
